@@ -1,0 +1,34 @@
+{
+  "timeZone": "Asia/Manila",
+  "dependencies": {},
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.readonly"
+  ],
+
+  "addOns": {
+    "common": {
+      "name": "PlugHub Gmail Add-on",
+      "logoUrl": "https://raw.githubusercontent.com/mikeangelofranco/Plughub_GmailDeleteEmails/main/gmail-addon/assets/plughub-logo.png",
+      "layoutProperties": {
+        "primaryColor": "#4285F4",
+        "secondaryColor": "#FFFFFF"
+      }
+    },
+    "gmail": {
+      "homepageTrigger": {
+        "runFunction": "buildHomePage"
+      },
+      "contextualTriggers": [
+        {
+          "unconditional": {},
+          "onTriggerFunction": "buildAddOn"
+        }
+      ],
+      "authorizationCheckFunction": "onAuthorize"
+    }
+  }
+}
