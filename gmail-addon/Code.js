@@ -105,19 +105,23 @@ function createCleanerCard(e, context) {
           .setText("<b>Preview</b>")
       );
 
-      var totalMatched = (typeof context.preview.total === "number")
+      var hasCount = typeof context.preview.total === "number";
+      var totalMatched = hasCount
         ? context.preview.total
         : (context.preview.items ? context.preview.items.length : 0);
+      var totalLabel = hasCount
+        ? (context.preview.truncated ? totalMatched + "+" : String(totalMatched))
+        : String(totalMatched);
       section.addWidget(
         CardService.newTextParagraph()
-          .setText("Total matched emails: " + totalMatched)
+          .setText("Total matched emails: " + totalLabel)
       );
 
       if (context.preview.items && context.preview.items.length) {
         context.preview.items.forEach(function (item) {
           section.addWidget(
             CardService.newKeyValue()
-              .setTopLabel(item.from + " • " + item.date)
+              .setTopLabel(item.from + " | " + item.date)
               .setContent(item.subject)
               .setBottomLabel(item.snippet)
           );
@@ -206,16 +210,31 @@ function onPreviewEmails(e) {
 }
 
 function onDeleteNow(e) {
-  var summary = summarizeState(e);
-  return CardService.newActionResponseBuilder()
-    .setNavigation(
-      CardService.newNavigation().updateCard(createCleanerCard(e, null))
-    )
-    .setNotification(
-      CardService.newNotification()
-        .setText("Delete action is not implemented yet. " + summary)
-    )
-    .build();
+  var state = getFormState(e);
+  try {
+    var result = deleteMessagesForState(e, state);
+    var summary = buildDeleteSummary(result, state);
+
+    return CardService.newActionResponseBuilder()
+      .setNavigation(
+        CardService.newNavigation().updateCard(createCleanerCard(e, null))
+      )
+      .setNotification(
+        CardService.newNotification()
+          .setText(summary)
+      )
+      .build();
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNavigation(
+        CardService.newNavigation().updateCard(createCleanerCard(e, { error: err.message }))
+      )
+      .setNotification(
+        CardService.newNotification()
+          .setText("Delete failed: " + err.message)
+      )
+      .build();
+  }
 }
 
 /**
@@ -277,6 +296,9 @@ function summarizeState(e) {
 
 var PREVIEW_MESSAGE_LIMIT = 5;
 var PREVIEW_THREAD_SEARCH_LIMIT = 8;
+var COUNT_PAGE_SIZE = 500;
+var COUNT_HARD_LIMIT = 20000;
+var DELETE_OPERATION_LIMIT = 20000;
 
 function previewCurrentThread(e, state) {
   if (!e || !e.gmail || !e.gmail.threadId) {
@@ -297,7 +319,8 @@ function previewCurrentThread(e, state) {
   return {
     summary: summary,
     items: matches.entries,
-    total: matches.total
+    total: matches.total,
+    truncated: false
   };
 }
 
@@ -319,9 +342,12 @@ function previewMailbox(state) {
     previewItems = previewItems.concat(threadMatches.entries);
   }
 
-  var totalMatches = getTotalMatchCount(query);
+  var countInfo = getTotalMatchCount(query, state.includeTrash);
+  var totalMatches = countInfo.count;
+  var countTruncated = countInfo.truncated;
   if (totalMatches === null) {
     totalMatches = scannedMatches;
+    countTruncated = previewItems.length >= PREVIEW_MESSAGE_LIMIT;
   }
 
   var scopeLabel = state.deleteScope === "inbox" ? "Inbox" : "All mail";
@@ -332,19 +358,145 @@ function previewMailbox(state) {
     summary = "Found " + totalMatches + " matching email(s) in " + scopeLabel + ", but none were available to preview.";
   } else {
     summary = "Showing top " + previewItems.length + " of " + totalMatches + " matching email(s) in " + scopeLabel + ".";
+    if (countTruncated) {
+      summary += " (Count truncated after " + COUNT_HARD_LIMIT + " messages.)";
+    }
   }
 
   return {
     summary: summary,
     items: previewItems,
-    total: totalMatches
+    total: totalMatches,
+    truncated: countTruncated
+  };
+}
+
+function deleteMessagesForState(e, state) {
+  if (state.deleteScope === "thread") {
+    return deleteThreadMessages(e, state);
+  }
+  return deleteMailboxMessages(state);
+}
+
+function deleteThreadMessages(e, state) {
+  if (!e || !e.gmail || !e.gmail.threadId) {
+    throw new Error("Open an email to delete the current thread or choose Inbox/All mail.");
+  }
+
+  var thread = GmailApp.getThreadById(e.gmail.threadId);
+  if (!thread) {
+    throw new Error("Unable to load the selected thread.");
+  }
+
+  var messages = thread.getMessages();
+  var total = 0;
+  var deleted = 0;
+  var errors = 0;
+
+  for (var i = 0; i < messages.length; i++) {
+    var message = messages[i];
+    if (!messageMatchesFilters(message, state)) {
+      continue;
+    }
+    total++;
+    if (trashMessage(message, state)) {
+      deleted++;
+    } else {
+      errors++;
+    }
+  }
+
+  return {
+    scope: "thread",
+    total: total,
+    deleted: deleted,
+    errors: errors,
+    truncated: false
+  };
+}
+
+function deleteMailboxMessages(state) {
+  if (typeof Gmail === "undefined" || !Gmail.Users || !Gmail.Users.Messages) {
+    throw new Error("Enable the Gmail advanced service in Apps Script to delete outside the current thread.");
+  }
+
+  var query = buildSearchQuery(state);
+  var pageToken = null;
+  var deleted = 0;
+  var processed = 0;
+  var errors = 0;
+  var truncated = false;
+  var stop = false;
+
+  try {
+    do {
+    var params = {
+        q: query,
+        maxResults: COUNT_PAGE_SIZE,
+        includeSpamTrash: !!state.includeTrash,
+        fields: "messages(id,labelIds),nextPageToken"
+      };
+      if (pageToken) {
+        params.pageToken = pageToken;
+      }
+
+      var response = Gmail.Users.Messages.list("me", params);
+      var messages = (response && response.messages) ? response.messages : [];
+
+      for (var i = 0; i < messages.length; i++) {
+        if (processed >= DELETE_OPERATION_LIMIT) {
+          truncated = true;
+          stop = true;
+          break;
+        }
+        var messageResource = messages[i];
+        var labelIds = messageResource.labelIds || [];
+        var isInTrash = labelIds.indexOf("TRASH") !== -1;
+        var hardDelete = state.includeTrash && isInTrash;
+
+        processed++;
+        if (trashMessageById(messageResource.id, hardDelete)) {
+          deleted++;
+        } else {
+          errors++;
+        }
+      }
+
+      if (stop) {
+        break;
+      }
+
+      pageToken = response && response.nextPageToken;
+      if (!pageToken) {
+        break;
+      }
+    } while (true);
+  } catch (err) {
+    Logger.log("Failed to delete Gmail messages: " + err);
+    throw new Error("Unable to delete emails for the current filters.");
+  }
+
+  if (pageToken) {
+    truncated = true;
+  }
+
+  return {
+    scope: state.deleteScope,
+    total: processed,
+    deleted: deleted,
+    errors: errors,
+    truncated: truncated
   };
 }
 
 function buildSearchQuery(state) {
   var clauses = [];
   if (state.deleteScope === "inbox") {
-    clauses.push("in:inbox");
+    if (state.includeTrash) {
+      clauses.push("(in:inbox OR in:trash)");
+    } else {
+      clauses.push("in:inbox");
+    }
   } else if (state.deleteScope === "all") {
     clauses.push("in:anywhere");
   }
@@ -375,13 +527,7 @@ function collectMessages(messages, state, limit) {
   var total = 0;
   for (var i = 0; i < messages.length; i++) {
     var message = messages[i];
-    if (!state.includeTrash && message.isInTrash && message.isInTrash()) {
-      continue;
-    }
-    if (state.saveStarred && message.isInStarred && message.isInStarred()) {
-      continue;
-    }
-    if (!matchesSubject(message.getSubject(), state.subjectTokens)) {
+    if (!messageMatchesFilters(message, state)) {
       continue;
     }
 
@@ -395,6 +541,91 @@ function collectMessages(messages, state, limit) {
     total: total,
     entries: entries
   };
+}
+
+function messageMatchesFilters(message, state) {
+  if (!state.includeTrash && typeof message.isInTrash === "function" && message.isInTrash()) {
+    return false;
+  }
+  if (state.saveStarred && typeof message.isStarred === "function" && message.isStarred()) {
+    return false;
+  }
+  return matchesSubject(message.getSubject(), state.subjectTokens);
+}
+
+function trashMessage(message, state) {
+  if (!message) {
+    return false;
+  }
+
+  var hardDelete = false;
+  if (state.includeTrash && typeof message.isInTrash === "function") {
+    hardDelete = message.isInTrash();
+  }
+
+  if (!hardDelete && typeof message.moveToTrash === "function") {
+    try {
+      message.moveToTrash();
+      return true;
+    } catch (err) {
+      Logger.log("Failed to move message to trash via GmailApp: " + err);
+    }
+  }
+
+  if (typeof message.getId !== "function") {
+    return false;
+  }
+  return trashMessageById(message.getId(), hardDelete);
+}
+
+function trashMessageById(messageId, hardDelete) {
+  if (!messageId) {
+    return false;
+  }
+
+  try {
+    if (hardDelete && typeof Gmail !== "undefined" && Gmail.Users && Gmail.Users.Messages && Gmail.Users.Messages.delete) {
+      Gmail.Users.Messages.delete("me", messageId);
+    } else if (typeof Gmail !== "undefined" && Gmail.Users && Gmail.Users.Messages && Gmail.Users.Messages.trash) {
+      Gmail.Users.Messages.trash("me", messageId);
+    } else {
+      GmailApp.getMessageById(messageId).moveToTrash();
+    }
+    return true;
+  } catch (err) {
+    Logger.log("Failed to remove message " + messageId + ": " + err);
+    return false;
+  }
+}
+
+function buildDeleteSummary(result, state) {
+  if (!result.total) {
+    return "No matching emails were found to delete.";
+  }
+
+  var scopeText;
+  if (state.deleteScope === "thread") {
+    scopeText = "this thread";
+  } else if (state.deleteScope === "inbox") {
+    scopeText = "your Inbox";
+  } else {
+    scopeText = "All mail";
+  }
+
+  var message = "Deleted " + result.deleted + " email(s) from " + scopeText;
+  if (result.deleted !== result.total) {
+    message += " out of " + result.total;
+  }
+  message += ".";
+
+  if (result.errors) {
+    message += " " + result.errors + " email(s) could not be deleted.";
+  }
+  if (result.truncated) {
+    message += " Stopped early due to execution limits.";
+  }
+
+  return message;
 }
 
 function parseSubjectTokens(value) {
@@ -450,28 +681,53 @@ function formatDate(date) {
   return Utilities.formatDate(date, Session.getScriptTimeZone(), "MMM d, yyyy h:mm a");
 }
 
-function getTotalMatchCount(query) {
+function getTotalMatchCount(query, includeTrash) {
   if (!query) {
     query = "in:anywhere";
   }
 
-  try {
-    if (typeof Gmail === "undefined" || !Gmail.Users || !Gmail.Users.Messages) {
-      return null;
-    }
-    var response = Gmail.Users.Messages.list("me", {
-      q: query,
-      maxResults: 1,
-      fields: "resultSizeEstimate"
-    });
-    if (response && typeof response.resultSizeEstimate === "number") {
-      return response.resultSizeEstimate;
-    }
-  } catch (err) {
-    Logger.log("Failed to determine total match count: " + err);
+  if (typeof Gmail === "undefined" || !Gmail.Users || !Gmail.Users.Messages) {
+    return { count: null, truncated: false };
   }
 
-  return null;
+  var total = 0;
+  var truncated = false;
+  var pageToken = null;
+
+  try {
+    do {
+      var params = {
+        q: query,
+        maxResults: COUNT_PAGE_SIZE,
+        includeSpamTrash: !!includeTrash,
+        fields: "messages/id,nextPageToken"
+      };
+      if (pageToken) {
+        params.pageToken = pageToken;
+      }
+      var response = Gmail.Users.Messages.list("me", params);
+      if (response.messages) {
+        total += response.messages.length;
+      }
+      pageToken = response.nextPageToken;
+      if (!pageToken) {
+        break;
+      }
+      if (total >= COUNT_HARD_LIMIT) {
+        truncated = true;
+        break;
+      }
+    } while (true);
+  } catch (err) {
+    Logger.log("Failed to determine total match count: " + err);
+    return { count: null, truncated: false };
+  }
+
+  if (pageToken) {
+    truncated = true;
+  }
+
+  return { count: total, truncated: truncated };
 }
 
 
