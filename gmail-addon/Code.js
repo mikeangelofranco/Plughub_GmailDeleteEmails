@@ -13,7 +13,7 @@ function buildAddOn(e) {
 
   var section = CardService.newCardSection()
     .addWidget(CardService.newTextParagraph()
-      .setText("👋 Hello from PlugHub Gmail Add-on!"))
+      .setText("👋 Hello from Plughub Email Cleaner!"))
     .addWidget(CardService.newTextParagraph()
       .setText("**From:** " + from))
     .addWidget(CardService.newTextParagraph()
@@ -22,7 +22,7 @@ function buildAddOn(e) {
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle("PlugHub Gmail Add-on")
+        .setTitle("Plughub Email Cleaner")
         .setSubtitle("Quick glance at this email")
     )
     .addSection(section)
@@ -38,13 +38,13 @@ function buildHomePage(e) {
   var section = CardService.newCardSection()
     .addWidget(
       CardService.newTextParagraph()
-        .setText("Welcome to PlugHub Gmail Add-on.\nSelect an email to see details here.")
+        .setText("Welcome to Plughub Email Cleaner.\nSelect an email to see details here.")
     );
 
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle("PlugHub Gmail Add-on")
+        .setTitle("Plughub Email Cleaner")
         .setSubtitle("Homepage")
     )
     .addSection(section)
@@ -66,7 +66,7 @@ function onAuthorize(e) {
       CardService.newCardSection()
         .addWidget(
           CardService.newTextParagraph()
-            .setText("Please grant the requested permissions to use the PlugHub Gmail Add-on.")
+            .setText("Please grant the requested permissions to use Plughub Email Cleaner.")
         )
     )
     .build();

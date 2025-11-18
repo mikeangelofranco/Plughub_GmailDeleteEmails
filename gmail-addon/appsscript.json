@@ -11,8 +11,8 @@
 
   "addOns": {
     "common": {
-      "name": "PlugHub Gmail Add-on",
-      "logoUrl": "https://raw.githubusercontent.com/mikeangelofranco/Plughub_GmailDeleteEmails/main/gmail-addon/assets/plughub-logo.png",
+      "name": "Plughub Email Cleaner",
+      "logoUrl": "https://raw.githubusercontent.com/mikeangelofranco/Plughub_GmailDeleteEmails/main/gmail-addon/assets/plughub-email-cleaner.png",
       "layoutProperties": {
         "primaryColor": "#4285F4",
         "secondaryColor": "#FFFFFF"
